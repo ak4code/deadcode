@@ -379,8 +379,12 @@ impl<'source> EntityExtractor<'source> {
                 if heuristics::is_test_function_name(simple_name) {
                     return true;
                 }
+                let is_property = decorator_names
+                    .iter()
+                    .any(|decorator| heuristics::is_property_decorator(decorator));
                 entity_kind == EntityKind::Method
-                    && (heuristics::is_implicit_method_name(simple_name)
+                    && (is_property
+                        || heuristics::is_implicit_method_name(simple_name)
                         || self.is_inside_framework_driven_class())
             }
             EntityKind::Variable => false,

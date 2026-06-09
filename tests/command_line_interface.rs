@@ -44,6 +44,55 @@ fn json_format_produces_parseable_output() {
 }
 
 #[test]
+fn kind_filter_limits_report_to_requested_kinds() {
+    let fixture = fixture_project_path();
+    let output = run_dc(&[
+        "--target-path",
+        fixture.to_str().unwrap(),
+        "--kind",
+        "variable",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("LEGACY_FLAG"), "{stdout}");
+    assert!(!stdout.contains("abandoned_view"), "{stdout}");
+    assert!(!stdout.contains("unused_helper"), "{stdout}");
+}
+
+#[test]
+fn kind_filter_accepts_comma_separated_values() {
+    let fixture = fixture_project_path();
+    let output = run_dc(&[
+        "--target-path",
+        fixture.to_str().unwrap(),
+        "--kind",
+        "function,method",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("abandoned_view"), "{stdout}");
+    assert!(stdout.contains("unused_helper"), "{stdout}");
+    assert!(!stdout.contains("LEGACY_FLAG"), "{stdout}");
+}
+
+#[test]
+fn kind_filter_without_matches_produces_exit_code_zero() {
+    let fixture = fixture_project_path();
+    let output = run_dc(&[
+        "--target-path",
+        fixture.to_str().unwrap(),
+        "--kind",
+        "class",
+    ]);
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Мертвый код не найден"), "{stdout}");
+}
+
+#[test]
 fn missing_target_directory_produces_exit_code_two() {
     let output = run_dc(&["--target-path", "/nonexistent/project"]);
 

@@ -14,6 +14,7 @@ cargo build --release
 ./target/release/dc            # запуск в корне анализируемого проекта
 ./target/release/dc --target-path /path/to/project --verbose
 ./target/release/dc --format json > report.json
+./target/release/dc --kind function,method   # только функции и методы
 ```
 
 Параметры командной строки:
@@ -23,6 +24,7 @@ cargo build --release
 | `-t, --target-path` | `.` | Корневая директория проекта |
 | `-c, --config-path` | автопоиск | Путь к файлу конфигурации |
 | `-f, --format` | `text` | Формат отчета: `text` или `json` |
+| `-k, --kind` | все виды | Фильтр находок: `function`, `class`, `method`, `variable`; повторение или перечисление через запятую |
 | `-v, --verbose` | выкл. | Вывод статистики анализа |
 
 Коды завершения (для интеграции с CI):
@@ -92,6 +94,9 @@ extra_dynamic_names = ["called_from_template"]
 - **Хуки фреймворков** — методы с префиксами `validate_`, `clean_`,
   `get_`, `perform_`, `has_`, `test_` вызываются Django, DRF и Pytest
   по соглашению и не считаются мертвым кодом.
+- **Свойства** — методы под `@property`, `@cached_property` и аксессорами
+  `@имя.setter` / `@имя.getter` / `@имя.deleter` читаются как атрибуты
+  (в том числе из шаблонов Django) и не считаются мертвым кодом.
 - **Классы под управлением фреймворка** — методы классов, унаследованных
   от баз `Serializer`, `ViewSet`, `View`, `Permission`, `Form`, `Admin`,
   `Middleware`, `TestCase` и подобных, вызываются фреймворком по контракту;

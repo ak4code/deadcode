@@ -40,6 +40,12 @@ fn detects_dead_code_and_respects_django_heuristics() {
         !contains("shop.models.Product.display_price"),
         "{dead_names:?}"
     );
+    // Свойства модели читаются из шаблонов и не считаются мертвыми.
+    assert!(
+        !contains("shop.models.Product.availability_label"),
+        "{dead_names:?}"
+    );
+    assert!(!contains("shop.models.Product.slug"), "{dead_names:?}");
     // Задача Celery и ее вспомогательная функция живые.
     assert!(!contains("shop.tasks.refresh_catalog"), "{dead_names:?}");
     assert!(
