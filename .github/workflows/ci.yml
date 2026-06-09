@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Качество кода и тесты
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Установка Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Кеш сборки
+        uses: Swatinem/rust-cache@v2
+
+      - name: Форматирование
+        run: cargo fmt --all --check
+
+      - name: Статический анализ
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Тесты
+        run: cargo test
+
+      - name: Релизная сборка
+        run: cargo build --release
