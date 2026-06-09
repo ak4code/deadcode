@@ -87,8 +87,15 @@ extra_dynamic_names = ["called_from_template"]
 - **Pytest** — `pytest.fixture` помечает фикстуры точками входа, строки из
   `pytest.mark.usefixtures` добавляются в пул динамических ссылок.
 - **Соглашения Django** — `urlpatterns`, модули `settings`, классы `Meta`
-  и `AppConfig`, неявно вызываемые методы (`handle`, `save`,
-  `get_queryset` и другие) и dunder-методы не считаются мертвым кодом.
+  и `AppConfig`, неявно вызываемые методы (`handle`, `save`, `validate`
+  и другие) и dunder-методы не считаются мертвым кодом.
+- **Хуки фреймворков** — методы с префиксами `validate_`, `clean_`,
+  `get_`, `perform_`, `has_`, `test_` вызываются Django, DRF и Pytest
+  по соглашению и не считаются мертвым кодом.
+- **Классы под управлением фреймворка** — методы классов, унаследованных
+  от баз `Serializer`, `ViewSet`, `View`, `Permission`, `Form`, `Admin`,
+  `Middleware`, `TestCase` и подобных, вызываются фреймворком по контракту;
+  функции `test_*` это точки входа Pytest.
 
 ## Архитектура
 

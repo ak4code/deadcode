@@ -110,6 +110,17 @@ enum ScopeKind {
     Function,
 }
 
+/// Область видимости в стеке обхода.
+#[derive(Debug)]
+struct Scope {
+    /// Простое имя области видимости.
+    name: String,
+    /// Вид области видимости.
+    kind: ScopeKind,
+    /// Признак класса, методы которого вызывает фреймворк.
+    is_framework_driven: bool,
+}
+
 /// Обходчик синтаксического дерева одного файла.
 struct EntityExtractor<'source> {
     source_code: &'source str,
@@ -117,7 +128,7 @@ struct EntityExtractor<'source> {
     module_path: String,
     configuration: &'source AnalyzerConfiguration,
     is_management_command_file: bool,
-    scope_stack: Vec<(String, ScopeKind)>,
+    scope_stack: Vec<Scope>,
     entities: Vec<CodeEntity>,
     references: HashSet<ScopedReference>,
     dynamic_references: HashSet<String>,
@@ -180,7 +191,7 @@ impl<'source> EntityExtractor<'source> {
         let scope_segments: Vec<&str> = self
             .scope_stack
             .iter()
-            .map(|(scope_name, _)| scope_name.as_str())
+            .map(|scope| scope.name.as_str())
             .collect();
         format!("{}.{}", self.module_path, scope_segments.join("."))
     }
@@ -267,7 +278,13 @@ impl<'source> EntityExtractor<'source> {
         let is_class_definition = definition_node.kind() == "class_definition";
         let entity_kind = if is_class_definition {
             EntityKind::Class
-        } else if matches!(self.scope_stack.last(), Some((_, ScopeKind::Class))) {
+        } else if matches!(
+            self.scope_stack.last(),
+            Some(Scope {
+                kind: ScopeKind::Class,
+                ..
+            })
+        ) {
             EntityKind::Method
         } else {
             EntityKind::Function
@@ -294,7 +311,13 @@ impl<'source> EntityExtractor<'source> {
         } else {
             ScopeKind::Function
         };
-        self.scope_stack.push((simple_name, scope_kind));
+        let is_framework_driven = is_class_definition
+            && heuristics::is_framework_driven_base(self.superclasses_text(definition_node));
+        self.scope_stack.push(Scope {
+            name: simple_name,
+            kind: scope_kind,
+            is_framework_driven,
+        });
         let mut tree_cursor = definition_node.walk();
         let child_nodes: Vec<Node> = definition_node.children(&mut tree_cursor).collect();
         for child_node in child_nodes {
@@ -337,11 +360,10 @@ impl<'source> EntityExtractor<'source> {
                 {
                     return true;
                 }
-                let superclasses_text = definition_node
-                    .child_by_field_name("superclasses")
-                    .map(|superclasses_node| self.node_text(superclasses_node))
-                    .unwrap_or("");
-                heuristics::is_app_config_class(&self.module_path, superclasses_text)
+                heuristics::is_app_config_class(
+                    &self.module_path,
+                    self.superclasses_text(definition_node),
+                )
             }
             EntityKind::Function | EntityKind::Method => {
                 let is_entry_by_decorator = decorator_names.iter().any(|decorator| {
@@ -354,11 +376,40 @@ impl<'source> EntityExtractor<'source> {
                 if is_entry_by_decorator {
                     return true;
                 }
+                if heuristics::is_test_function_name(simple_name) {
+                    return true;
+                }
                 entity_kind == EntityKind::Method
-                    && heuristics::is_implicit_method_name(simple_name)
+                    && (heuristics::is_implicit_method_name(simple_name)
+                        || self.is_inside_framework_driven_class())
             }
             EntityKind::Variable => false,
         }
+    }
+
+    /// Возвращает текст списка базовых классов определения класса.
+    ///
+    /// :param definition_node: Узел `class_definition`.
+    /// :return: Текст списка базовых классов либо пустая строка.
+    fn superclasses_text(&self, definition_node: Node) -> &'source str {
+        definition_node
+            .child_by_field_name("superclasses")
+            .map(|superclasses_node| self.node_text(superclasses_node))
+            .unwrap_or("")
+    }
+
+    /// Проверяет, объявлен ли метод внутри класса, управляемого фреймворком.
+    ///
+    /// :return: Признак метода класса, унаследованного от базы фреймворка.
+    fn is_inside_framework_driven_class(&self) -> bool {
+        matches!(
+            self.scope_stack.last(),
+            Some(Scope {
+                kind: ScopeKind::Class,
+                is_framework_driven: true,
+                ..
+            })
+        )
     }
 
     /// Обрабатывает вызов функции и применяет эвристики динамических ссылок.
@@ -494,11 +545,7 @@ impl<'source> EntityExtractor<'source> {
     ///
     /// :param class_node: Узел `class_definition`.
     fn process_admin_class_attributes(&mut self, class_node: Node) {
-        let superclasses_text = class_node
-            .child_by_field_name("superclasses")
-            .map(|superclasses_node| self.node_text(superclasses_node))
-            .unwrap_or("");
-        if !superclasses_text.contains("ModelAdmin") {
+        if !self.superclasses_text(class_node).contains("ModelAdmin") {
             return;
         }
         let Some(body_node) = class_node.child_by_field_name("body") else {
