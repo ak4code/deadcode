@@ -1,119 +1,81 @@
-use std::path::{Component, Path, PathBuf};
+//! Этап извлечения: парсинг файлов и обход синтаксических деревьев.
+//!
+//! Из каждого файла извлекаются определения сущностей, ссылки на имена
+//! с привязкой к областям видимости и динамические строковые ссылки.
 
-use tree_sitter::{Node, Parser};
+use std::collections::HashSet;
+use std::path::{Component, Path};
 
-use crate::django_heuristics;
+use tree_sitter::{Node, Parser, Tree};
 
-/// Вид извлеченной сущности кода.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntityKind {
-    Function,
-    Class,
-    Method,
-    Variable,
+use crate::config::AnalyzerConfiguration;
+use crate::heuristics;
+use crate::model::{CodeEntity, EntityKind, FileAnalysis, ScopedReference, SkippedFile};
+
+/// Парсер исходного кода Python, переиспользуемый рабочим потоком.
+pub struct PythonSourceParser {
+    inner_parser: Parser,
 }
 
-impl EntityKind {
-    /// Возвращает локализованное название вида сущности.
+impl PythonSourceParser {
+    /// Создает парсер с подключенной грамматикой Python.
     ///
-    /// :return: Название вида сущности для отчета.
-    pub fn label(&self) -> &'static str {
-        match self {
-            EntityKind::Function => "функция",
-            EntityKind::Class => "класс",
-            EntityKind::Method => "метод",
-            EntityKind::Variable => "переменная",
-        }
+    /// :return: Готовый к работе парсер.
+    pub fn new() -> Self {
+        let mut inner_parser = Parser::new();
+        inner_parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("грамматика tree-sitter-python несовместима с версией tree-sitter");
+        Self { inner_parser }
+    }
+
+    /// Строит синтаксическое дерево исходного кода.
+    ///
+    /// :param source_code: Исходный код файла на Python.
+    /// :return: Синтаксическое дерево либо `None` при сбое парсера.
+    fn parse(&mut self, source_code: &str) -> Option<Tree> {
+        self.inner_parser.parse(source_code, None)
     }
 }
 
-/// Извлеченная из исходного кода сущность.
-#[derive(Debug, Clone)]
-pub struct CodeEntity {
-    /// Простое имя сущности.
-    pub simple_name: String,
-    /// Полное точечное имя сущности.
-    pub qualified_name: String,
-    /// Полное имя области видимости, содержащей сущность.
-    pub containing_scope: String,
-    /// Вид сущности.
-    pub kind: EntityKind,
-    /// Путь к файлу с определением.
-    pub file_path: PathBuf,
-    /// Номер строки определения.
-    pub line_number: usize,
-    /// Признак точки входа анализа достижимости.
-    pub is_entry_point: bool,
-}
-
-/// Ссылка на имя из конкретной области видимости.
-#[derive(Debug)]
-pub struct ScopedReference {
-    /// Полное имя области видимости, содержащей ссылку.
-    pub scope_qualified_name: String,
-    /// Простое имя, на которое выполнена ссылка.
-    pub referenced_name: String,
-}
-
-/// Результат анализа одного файла Python.
-#[derive(Debug)]
-pub struct FileAnalysis {
-    /// Точечный путь модуля.
-    pub module_path: String,
-    /// Извлеченные сущности.
-    pub entities: Vec<CodeEntity>,
-    /// Ссылки на имена с привязкой к областям видимости.
-    pub scoped_references: Vec<ScopedReference>,
-    /// Пул динамических строковых ссылок.
-    pub dynamic_references: Vec<String>,
-}
-
-/// Вид области видимости в стеке обхода.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScopeKind {
-    Class,
-    Function,
-}
-
-/// Обходчик синтаксического дерева одного файла.
-struct EntityExtractor<'source> {
-    source_code: &'source str,
-    file_path: &'source Path,
-    is_management_command_file: bool,
-    scope_stack: Vec<(String, ScopeKind)>,
-    analysis: FileAnalysis,
+impl Default for PythonSourceParser {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Выполняет полный анализ одного файла Python.
 ///
-/// Файл читается с диска, парсится `tree-sitter` и обходится
-/// для извлечения сущностей, ссылок и динамических строк.
-///
+/// :param source_parser: Переиспользуемый парсер рабочего потока.
 /// :param file_path: Путь к файлу Python.
 /// :param project_root: Корневая директория проекта.
-/// :return: Результат анализа либо `None` при ошибке чтения или парсинга.
-pub fn analyze_python_file(file_path: &Path, project_root: &Path) -> Option<FileAnalysis> {
-    let source_code = std::fs::read_to_string(file_path).ok()?;
-    let mut python_parser = Parser::new();
-    python_parser
-        .set_language(&tree_sitter_python::LANGUAGE.into())
-        .ok()?;
-    let syntax_tree = python_parser.parse(&source_code, None)?;
+/// :param configuration: Конфигурация анализатора.
+/// :return: Результат анализа либо описание причины пропуска файла.
+pub fn analyze_python_file(
+    source_parser: &mut PythonSourceParser,
+    file_path: &Path,
+    project_root: &Path,
+    configuration: &AnalyzerConfiguration,
+) -> Result<FileAnalysis, SkippedFile> {
+    let source_code = std::fs::read_to_string(file_path).map_err(|read_error| SkippedFile {
+        file_path: file_path.to_path_buf(),
+        reason: format!("ошибка чтения: {read_error}"),
+    })?;
+    let syntax_tree = source_parser
+        .parse(&source_code)
+        .ok_or_else(|| SkippedFile {
+            file_path: file_path.to_path_buf(),
+            reason: "парсер tree-sitter не построил синтаксическое дерево".to_string(),
+        })?;
 
-    let mut extractor = EntityExtractor {
-        source_code: &source_code,
+    let mut entity_extractor = EntityExtractor::new(
+        &source_code,
         file_path,
-        is_management_command_file: django_heuristics::is_management_command_path(file_path),
-        scope_stack: Vec::new(),
-        analysis: FileAnalysis {
-            module_path: compute_module_path(file_path, project_root),
-            entities: Vec::new(),
-            scoped_references: Vec::new(),
-            dynamic_references: Vec::new(),
-        },
-    };
-    extractor.visit_node(syntax_tree.root_node());
-    Some(extractor.analysis)
+        compute_module_path(file_path, project_root),
+        configuration,
+    );
+    entity_extractor.visit_node(syntax_tree.root_node());
+    Ok(entity_extractor.into_analysis())
 }
 
 /// Вычисляет точечный путь модуля по расположению файла.
@@ -121,7 +83,7 @@ pub fn analyze_python_file(file_path: &Path, project_root: &Path) -> Option<File
 /// :param file_path: Путь к файлу Python.
 /// :param project_root: Корневая директория проекта.
 /// :return: Точечный путь модуля вида `package.module`.
-pub fn compute_module_path(file_path: &Path, project_root: &Path) -> String {
+fn compute_module_path(file_path: &Path, project_root: &Path) -> String {
     let relative_path = file_path.strip_prefix(project_root).unwrap_or(file_path);
     let mut module_segments: Vec<String> = relative_path
         .components()
@@ -141,7 +103,65 @@ pub fn compute_module_path(file_path: &Path, project_root: &Path) -> String {
     module_segments.join(".")
 }
 
+/// Вид области видимости в стеке обхода.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeKind {
+    Class,
+    Function,
+}
+
+/// Обходчик синтаксического дерева одного файла.
+struct EntityExtractor<'source> {
+    source_code: &'source str,
+    file_path: &'source Path,
+    module_path: String,
+    configuration: &'source AnalyzerConfiguration,
+    is_management_command_file: bool,
+    scope_stack: Vec<(String, ScopeKind)>,
+    entities: Vec<CodeEntity>,
+    references: HashSet<ScopedReference>,
+    dynamic_references: HashSet<String>,
+}
+
 impl<'source> EntityExtractor<'source> {
+    /// Создает обходчик для одного файла.
+    ///
+    /// :param source_code: Исходный код файла.
+    /// :param file_path: Путь к файлу.
+    /// :param module_path: Точечный путь модуля.
+    /// :param configuration: Конфигурация анализатора.
+    /// :return: Готовый к обходу экземпляр.
+    fn new(
+        source_code: &'source str,
+        file_path: &'source Path,
+        module_path: String,
+        configuration: &'source AnalyzerConfiguration,
+    ) -> Self {
+        Self {
+            source_code,
+            file_path,
+            module_path,
+            configuration,
+            is_management_command_file: heuristics::is_management_command_path(file_path),
+            scope_stack: Vec::new(),
+            entities: Vec::new(),
+            references: HashSet::new(),
+            dynamic_references: HashSet::new(),
+        }
+    }
+
+    /// Завершает обход и возвращает результат анализа файла.
+    ///
+    /// :return: Результат анализа файла.
+    fn into_analysis(self) -> FileAnalysis {
+        FileAnalysis {
+            module_path: self.module_path,
+            entities: self.entities,
+            scoped_references: self.references.into_iter().collect(),
+            dynamic_references: self.dynamic_references.into_iter().collect(),
+        }
+    }
+
     /// Возвращает текст узла синтаксического дерева.
     ///
     /// :param node: Узел дерева tree-sitter.
@@ -155,14 +175,14 @@ impl<'source> EntityExtractor<'source> {
     /// :return: Точечное имя текущей области видимости.
     fn current_scope_qualified_name(&self) -> String {
         if self.scope_stack.is_empty() {
-            return self.analysis.module_path.clone();
+            return self.module_path.clone();
         }
         let scope_segments: Vec<&str> = self
             .scope_stack
             .iter()
             .map(|(scope_name, _)| scope_name.as_str())
             .collect();
-        format!("{}.{}", self.analysis.module_path, scope_segments.join("."))
+        format!("{}.{}", self.module_path, scope_segments.join("."))
     }
 
     /// Рекурсивно обходит узлы синтаксического дерева.
@@ -198,9 +218,8 @@ impl<'source> EntityExtractor<'source> {
         if referenced_name.is_empty() {
             return;
         }
-        let scope_qualified_name = self.current_scope_qualified_name();
-        self.analysis.scoped_references.push(ScopedReference {
-            scope_qualified_name,
+        self.references.insert(ScopedReference {
+            scope_qualified_name: self.current_scope_qualified_name(),
             referenced_name: referenced_name.to_string(),
         });
     }
@@ -221,7 +240,7 @@ impl<'source> EntityExtractor<'source> {
 
         for decorator_node in decorator_nodes {
             let normalized_decorator =
-                django_heuristics::normalize_decorator_expression(self.node_text(decorator_node));
+                heuristics::normalize_decorator_expression(self.node_text(decorator_node));
             if normalized_decorator.contains("usefixtures") {
                 self.collect_string_literals_into_pool(decorator_node);
             }
@@ -256,7 +275,7 @@ impl<'source> EntityExtractor<'source> {
         let is_entry_point =
             self.determine_entry_point(&simple_name, entity_kind, definition_node, decorator_names);
 
-        self.analysis.entities.push(CodeEntity {
+        self.entities.push(CodeEntity {
             simple_name: simple_name.clone(),
             qualified_name,
             containing_scope,
@@ -301,7 +320,7 @@ impl<'source> EntityExtractor<'source> {
         definition_node: Node,
         decorator_names: &[String],
     ) -> bool {
-        if django_heuristics::is_dunder_name(simple_name) {
+        if heuristics::is_dunder_name(simple_name) {
             return true;
         }
         match entity_kind {
@@ -309,12 +328,12 @@ impl<'source> EntityExtractor<'source> {
                 if self.is_management_command_file && simple_name == "Command" {
                     return true;
                 }
-                if django_heuristics::is_implicit_class_name(simple_name) {
+                if heuristics::is_implicit_class_name(simple_name) {
                     return true;
                 }
                 if decorator_names
                     .iter()
-                    .any(|decorator| django_heuristics::is_admin_register_decorator(decorator))
+                    .any(|decorator| heuristics::is_admin_register_decorator(decorator))
                 {
                     return true;
                 }
@@ -322,20 +341,21 @@ impl<'source> EntityExtractor<'source> {
                     .child_by_field_name("superclasses")
                     .map(|superclasses_node| self.node_text(superclasses_node))
                     .unwrap_or("");
-                django_heuristics::is_app_config_class(
-                    &self.analysis.module_path,
-                    superclasses_text,
-                )
+                heuristics::is_app_config_class(&self.module_path, superclasses_text)
             }
             EntityKind::Function | EntityKind::Method => {
-                if decorator_names
-                    .iter()
-                    .any(|decorator| django_heuristics::is_entry_point_decorator(decorator))
-                {
+                let is_entry_by_decorator = decorator_names.iter().any(|decorator| {
+                    heuristics::is_entry_point_decorator(decorator)
+                        || heuristics::matches_configured_decorator(
+                            decorator,
+                            &self.configuration.extra_entry_point_decorators,
+                        )
+                });
+                if is_entry_by_decorator {
                     return true;
                 }
                 entity_kind == EntityKind::Method
-                    && django_heuristics::is_implicit_method_name(simple_name)
+                    && heuristics::is_implicit_method_name(simple_name)
             }
             EntityKind::Variable => false,
         }
@@ -347,14 +367,14 @@ impl<'source> EntityExtractor<'source> {
     fn process_call(&mut self, call_node: Node) {
         if let Some(function_node) = call_node.child_by_field_name("function") {
             let function_text = self.node_text(function_node);
-            let function_name = django_heuristics::last_dotted_segment(function_text);
+            let function_name = heuristics::last_dotted_segment(function_text);
             let positional_arguments = self.collect_positional_arguments(call_node);
 
-            if django_heuristics::DYNAMIC_REFERENCE_BUILTINS.contains(&function_name) {
+            if heuristics::DYNAMIC_REFERENCE_BUILTINS.contains(&function_name) {
                 self.add_string_argument_to_pool(positional_arguments.get(1).copied());
             } else if function_name == "import_module" {
                 self.add_string_argument_to_pool(positional_arguments.first().copied());
-            } else if django_heuristics::URL_REGISTRATION_FUNCTIONS.contains(&function_name) {
+            } else if heuristics::URL_REGISTRATION_FUNCTIONS.contains(&function_name) {
                 self.process_url_registration(positional_arguments.get(1).copied());
             }
         }
@@ -386,7 +406,7 @@ impl<'source> EntityExtractor<'source> {
             return;
         };
         if let Some(literal_value) = self.string_literal_value(argument_node) {
-            self.analysis.dynamic_references.push(literal_value);
+            self.dynamic_references.insert(literal_value);
         }
     }
 
@@ -403,13 +423,12 @@ impl<'source> EntityExtractor<'source> {
         match view_argument.kind() {
             "string" => {
                 if let Some(literal_value) = self.string_literal_value(view_argument) {
-                    self.analysis.dynamic_references.push(literal_value);
+                    self.dynamic_references.insert(literal_value);
                 }
             }
             "identifier" | "attribute" => {
-                let view_name =
-                    django_heuristics::last_dotted_segment(self.node_text(view_argument));
-                self.analysis.dynamic_references.push(view_name.to_string());
+                let view_name = heuristics::last_dotted_segment(self.node_text(view_argument));
+                self.dynamic_references.insert(view_name.to_string());
             }
             _ => {}
         }
@@ -430,19 +449,7 @@ impl<'source> EntityExtractor<'source> {
                 if variable_name == "__all__" {
                     self.collect_string_literals_into_pool(assignment_node);
                 } else if self.scope_stack.is_empty() {
-                    let containing_scope = self.current_scope_qualified_name();
-                    let is_entry_point = django_heuristics::is_dunder_name(&variable_name)
-                        || django_heuristics::is_implicit_variable_name(&variable_name)
-                        || django_heuristics::is_settings_module(&self.analysis.module_path);
-                    self.analysis.entities.push(CodeEntity {
-                        simple_name: variable_name.clone(),
-                        qualified_name: format!("{containing_scope}.{variable_name}"),
-                        containing_scope,
-                        kind: EntityKind::Variable,
-                        file_path: self.file_path.to_path_buf(),
-                        line_number: left_node.start_position().row + 1,
-                        is_entry_point,
-                    });
+                    self.register_module_variable(&variable_name, left_node);
                 }
             }
         }
@@ -458,6 +465,26 @@ impl<'source> EntityExtractor<'source> {
             }
             self.visit_node(child_node);
         }
+    }
+
+    /// Регистрирует переменную уровня модуля как сущность.
+    ///
+    /// :param variable_name: Простое имя переменной.
+    /// :param name_node: Узел имени переменной.
+    fn register_module_variable(&mut self, variable_name: &str, name_node: Node) {
+        let containing_scope = self.current_scope_qualified_name();
+        let is_entry_point = heuristics::is_dunder_name(variable_name)
+            || heuristics::is_implicit_variable_name(variable_name)
+            || heuristics::is_settings_module(&self.module_path);
+        self.entities.push(CodeEntity {
+            simple_name: variable_name.to_string(),
+            qualified_name: format!("{containing_scope}.{variable_name}"),
+            containing_scope,
+            kind: EntityKind::Variable,
+            file_path: self.file_path.to_path_buf(),
+            line_number: name_node.start_position().row + 1,
+            is_entry_point,
+        });
     }
 
     /// Извлекает строковые ссылки из атрибутов класса `admin.ModelAdmin`.
@@ -490,7 +517,7 @@ impl<'source> EntityExtractor<'source> {
                 continue;
             };
             let attribute_name = self.node_text(left_node);
-            if !django_heuristics::ADMIN_DYNAMIC_ATTRIBUTES.contains(&attribute_name) {
+            if !heuristics::ADMIN_DYNAMIC_ATTRIBUTES.contains(&attribute_name) {
                 continue;
             }
             if let Some(right_node) = assignment_node.child_by_field_name("right") {
@@ -506,7 +533,7 @@ impl<'source> EntityExtractor<'source> {
     /// :param subtree_root: Корневой узел поддерева.
     fn collect_string_literals_into_pool(&mut self, subtree_root: Node) {
         if let Some(literal_value) = self.string_literal_value(subtree_root) {
-            self.analysis.dynamic_references.push(literal_value);
+            self.dynamic_references.insert(literal_value);
             return;
         }
         let mut tree_cursor = subtree_root.walk();
@@ -540,10 +567,8 @@ mod tests {
 
     #[test]
     fn module_path_is_computed_from_relative_location() {
-        let module_path = compute_module_path(
-            Path::new("/project/shop/views.py"),
-            Path::new("/project"),
-        );
+        let module_path =
+            compute_module_path(Path::new("/project/shop/views.py"), Path::new("/project"));
         assert_eq!(module_path, "shop.views");
     }
 

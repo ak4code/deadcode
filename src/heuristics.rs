@@ -1,3 +1,10 @@
+//! Эвристики неявного использования кода в Python, Django и Pytest.
+//!
+//! Динамическая природа Python не позволяет обнаружить все вызовы
+//! статически. Эвристики этого модуля устраняют ложные срабатывания
+//! на коде, который фреймворки вызывают по имени, по соглашению
+//! или по расположению.
+
 use std::path::Path;
 
 /// Последние сегменты декораторов, помечающих функцию как точку входа.
@@ -70,7 +77,7 @@ pub fn normalize_decorator_expression(decorator_text: &str) -> String {
     without_arguments.trim().to_string()
 }
 
-/// Проверяет принадлежность декоратора к точкам входа.
+/// Проверяет принадлежность декоратора к встроенным точкам входа.
 ///
 /// :param normalized_decorator: Нормализованное точечное имя декоратора.
 /// :return: Признак точки входа.
@@ -80,6 +87,23 @@ pub fn is_entry_point_decorator(normalized_decorator: &str) -> bool {
         return true;
     }
     normalized_decorator.ends_with("register.filter")
+}
+
+/// Проверяет совпадение декоратора с настроенным пользователем списком.
+///
+/// Совпадением считается полное точечное имя либо последний сегмент.
+///
+/// :param normalized_decorator: Нормализованное точечное имя декоратора.
+/// :param configured_decorators: Декораторы из конфигурации пользователя.
+/// :return: Признак точки входа по конфигурации.
+pub fn matches_configured_decorator(
+    normalized_decorator: &str,
+    configured_decorators: &[String],
+) -> bool {
+    let last_segment = last_dotted_segment(normalized_decorator);
+    configured_decorators
+        .iter()
+        .any(|configured| configured == normalized_decorator || configured == last_segment)
 }
 
 /// Проверяет регистрацию класса через декоратор `admin.register`.
@@ -145,8 +169,7 @@ pub fn is_settings_module(module_path: &str) -> bool {
 /// :param superclasses_text: Текст списка базовых классов.
 /// :return: Признак класса `AppConfig` в модуле `apps`.
 pub fn is_app_config_class(module_path: &str, superclasses_text: &str) -> bool {
-    let last_module_segment = last_dotted_segment(module_path);
-    last_module_segment == "apps" && superclasses_text.contains("AppConfig")
+    last_dotted_segment(module_path) == "apps" && superclasses_text.contains("AppConfig")
 }
 
 /// Проверяет имя на соответствие протоколу dunder.
@@ -188,6 +211,17 @@ mod tests {
         assert!(is_entry_point_decorator("register.filter"));
         assert!(!is_entry_point_decorator("property"));
         assert!(!is_entry_point_decorator("staticmethod"));
+    }
+
+    #[test]
+    fn configured_decorators_match_by_full_name_or_segment() {
+        let configured = vec!["broker.subscribe".to_string(), "periodic".to_string()];
+        assert!(matches_configured_decorator(
+            "broker.subscribe",
+            &configured
+        ));
+        assert!(matches_configured_decorator("app.periodic", &configured));
+        assert!(!matches_configured_decorator("app.other", &configured));
     }
 
     #[test]

@@ -1,9 +1,12 @@
+//! Этапы построения графа зависимостей и вычисления достижимости.
+
 use std::collections::{HashMap, HashSet};
 
 use petgraph::graph::{DiGraph, NodeIndex};
 
-use crate::django_heuristics;
-use crate::entity_extractor::{CodeEntity, FileAnalysis};
+use crate::config::AnalyzerConfiguration;
+use crate::heuristics;
+use crate::model::{CodeEntity, FileAnalysis};
 
 /// Вычисляет недостижимые сущности по результатам анализа файлов.
 ///
@@ -13,8 +16,12 @@ use crate::entity_extractor::{CodeEntity, FileAnalysis};
 /// считаются мертвым кодом.
 ///
 /// :param file_analyses: Результаты анализа всех файлов проекта.
+/// :param configuration: Конфигурация анализатора.
 /// :return: Список недостижимых сущностей, отсортированный по расположению.
-pub fn find_unreachable_entities(file_analyses: &[FileAnalysis]) -> Vec<&CodeEntity> {
+pub fn find_unreachable_entities<'analysis>(
+    file_analyses: &'analysis [FileAnalysis],
+    configuration: &'analysis AnalyzerConfiguration,
+) -> Vec<&'analysis CodeEntity> {
     let mut dependency_graph = DiGraph::<&str, ()>::new();
     let mut scope_nodes: HashMap<&str, NodeIndex> = HashMap::new();
     let mut name_index: HashMap<&str, Vec<NodeIndex>> = HashMap::new();
@@ -37,10 +44,15 @@ pub fn find_unreachable_entities(file_analyses: &[FileAnalysis]) -> Vec<&CodeEnt
         }
     }
 
-    add_reference_edges(file_analyses, &mut dependency_graph, &scope_nodes, &name_index);
+    add_reference_edges(
+        file_analyses,
+        &mut dependency_graph,
+        &scope_nodes,
+        &name_index,
+    );
     add_containment_edges(&entities_by_node, &mut dependency_graph, &scope_nodes);
 
-    let dynamic_reference_pool = build_dynamic_reference_pool(file_analyses);
+    let dynamic_reference_pool = build_dynamic_reference_pool(file_analyses, configuration);
     let reachable_nodes = compute_reachable_nodes(
         file_analyses,
         &dependency_graph,
@@ -78,7 +90,8 @@ fn add_reference_edges(
 ) {
     for file_analysis in file_analyses {
         for scoped_reference in &file_analysis.scoped_references {
-            let Some(&source_node) = scope_nodes.get(scoped_reference.scope_qualified_name.as_str())
+            let Some(&source_node) =
+                scope_nodes.get(scoped_reference.scope_qualified_name.as_str())
             else {
                 continue;
             };
@@ -120,18 +133,23 @@ fn add_containment_edges(
 /// Собирает общий пул динамических строковых ссылок проекта.
 ///
 /// Точечные строки вида `myapp.views.my_view` разрешаются до простого
-/// имени функции.
+/// имени функции. Имена из конфигурации пользователя дополняют пул.
 ///
 /// :param file_analyses: Результаты анализа файлов.
+/// :param configuration: Конфигурация анализатора.
 /// :return: Множество имен из динамических ссылок.
-fn build_dynamic_reference_pool(file_analyses: &[FileAnalysis]) -> HashSet<&str> {
+fn build_dynamic_reference_pool<'analysis>(
+    file_analyses: &'analysis [FileAnalysis],
+    configuration: &'analysis AnalyzerConfiguration,
+) -> HashSet<&'analysis str> {
     let mut dynamic_reference_pool = HashSet::new();
-    for file_analysis in file_analyses {
-        for dynamic_reference in &file_analysis.dynamic_references {
-            dynamic_reference_pool.insert(dynamic_reference.as_str());
-            dynamic_reference_pool
-                .insert(django_heuristics::last_dotted_segment(dynamic_reference));
-        }
+    let configured_names = configuration.extra_dynamic_names.iter().map(String::as_str);
+    let extracted_names = file_analyses
+        .iter()
+        .flat_map(|file_analysis| file_analysis.dynamic_references.iter().map(String::as_str));
+    for dynamic_name in configured_names.chain(extracted_names) {
+        dynamic_reference_pool.insert(dynamic_name);
+        dynamic_reference_pool.insert(heuristics::last_dotted_segment(dynamic_name));
     }
     dynamic_reference_pool
 }
