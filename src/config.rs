@@ -31,6 +31,12 @@ pub struct AnalyzerConfiguration {
     /// Применяются для подавления ложных срабатываний на коде,
     /// вызываемом способами, неизвестными анализатору.
     pub extra_dynamic_names: Vec<String>,
+    /// Дополнительные маркеры базовых классов под управлением фреймворка.
+    ///
+    /// Методы классов, унаследованных от базы с маркером в имени,
+    /// вызываются фреймворком и не считаются мертвым кодом. Признак
+    /// распространяется по иерархии наследования внутри проекта.
+    pub extra_framework_base_markers: Vec<String>,
 }
 
 impl Default for AnalyzerConfiguration {
@@ -43,6 +49,7 @@ impl Default for AnalyzerConfiguration {
             ],
             extra_entry_point_decorators: Vec::new(),
             extra_dynamic_names: Vec::new(),
+            extra_framework_base_markers: Vec::new(),
         }
     }
 }
@@ -151,6 +158,17 @@ mod tests {
         assert!(configuration
             .exclude_directories
             .contains(&"tests".to_string()));
+    }
+
+    #[test]
+    fn extra_framework_base_markers_are_parsed() {
+        let configuration: AnalyzerConfiguration =
+            toml::from_str("extra_framework_base_markers = [\"Repository\"]")
+                .expect("корректная конфигурация");
+        assert_eq!(
+            configuration.extra_framework_base_markers,
+            vec!["Repository".to_string()]
+        );
     }
 
     #[test]

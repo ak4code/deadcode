@@ -49,6 +49,8 @@ pub struct CodeEntity {
     pub line_number: usize,
     /// Признак точки входа анализа достижимости.
     pub is_entry_point: bool,
+    /// Простые имена базовых классов: заполняется только для классов.
+    pub superclass_names: Vec<String>,
 }
 
 /// Ссылка на имя из конкретной области видимости.

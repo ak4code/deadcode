@@ -101,6 +101,58 @@ fn base_classes_and_their_subclasses_are_alive() {
 }
 
 #[test]
+fn pydantic_models_and_nested_config_are_alive() {
+    let dead_names = collect_dead_names();
+    let contains = |name: &str| dead_names.iter().any(|dead| dead == name);
+
+    // Вложенный класс Config читается pydantic по соглашению.
+    assert!(
+        !contains("store.schemas.OrderSchema.Config"),
+        "{dead_names:?}"
+    );
+    // Методы наследника BaseModel вызываются pydantic и кодом проекта.
+    assert!(
+        !contains("store.schemas.OrderSchema.summary_line"),
+        "{dead_names:?}"
+    );
+    assert!(!contains("store.schemas.OrderSchema"), "{dead_names:?}");
+}
+
+#[test]
+fn elasticsearch_documents_and_overrides_are_alive() {
+    let dead_names = collect_dead_names();
+    let contains = |name: &str| dead_names.iter().any(|dead| dead == name);
+
+    // Класс зарегистрирован декоратором registry.register_document.
+    assert!(!contains("store.documents.OrderIndex"), "{dead_names:?}");
+    // Вложенные классы Index и Django читаются django-elasticsearch-dsl.
+    assert!(
+        !contains("store.documents.OrderIndex.Index"),
+        "{dead_names:?}"
+    );
+    assert!(
+        !contains("store.documents.OrderIndex.Django"),
+        "{dead_names:?}"
+    );
+    // Методы prepare_* вызываются при индексации документов.
+    assert!(
+        !contains("store.documents.OrderIndex.prepare_email"),
+        "{dead_names:?}"
+    );
+    // Метод базового класса под управлением фреймворка живой.
+    assert!(
+        !contains("store.documents.BaseSearchIndex.serialize_payload"),
+        "{dead_names:?}"
+    );
+    // Переопределение в наследнике живое: признак управления фреймворком
+    // распространяется по иерархии наследования транзитивно.
+    assert!(
+        !contains("store.documents.OrderIndex.serialize_payload"),
+        "{dead_names:?}"
+    );
+}
+
+#[test]
 fn genuinely_dead_code_is_still_detected() {
     let dead_names = collect_dead_names();
     assert_eq!(

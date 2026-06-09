@@ -59,6 +59,10 @@ extra_entry_point_decorators = ["broker.subscribe", "periodic_task"]
 
 # Имена, всегда считающиеся используемыми (подавление ложных срабатываний).
 extra_dynamic_names = ["called_from_template"]
+
+# Дополнительные маркеры базовых классов под управлением фреймворка:
+# методы наследников таких баз не считаются мертвым кодом.
+extra_framework_base_markers = ["Repository", "Actor"]
 ```
 
 ## Алгоритм анализа
@@ -99,8 +103,17 @@ extra_dynamic_names = ["called_from_template"]
   (в том числе из шаблонов Django) и не считаются мертвым кодом.
 - **Классы под управлением фреймворка** — методы классов, унаследованных
   от баз `Serializer`, `ViewSet`, `View`, `Permission`, `Form`, `Admin`,
-  `Middleware`, `TestCase` и подобных, вызываются фреймворком по контракту;
-  функции `test_*` это точки входа Pytest.
+  `Middleware`, `TestCase`, `BaseModel` (pydantic), `Document`
+  (elasticsearch-dsl) и подобных, вызываются фреймворком по контракту;
+  признак распространяется по иерархии наследования внутри проекта,
+  поэтому переопределения методов в наследниках не считаются мертвым
+  кодом. Список маркеров расширяется через `extra_framework_base_markers`.
+  Функции `test_*` это точки входа Pytest.
+- **Вложенные классы соглашений** — `Meta`, `Media` (Django),
+  `Config` (pydantic), `Index`, `Django` (django-elasticsearch-dsl)
+  читаются фреймворками и не считаются мертвым кодом; методы `prepare_*`
+  документов вызываются при индексации, классы под
+  `@registry.register_document` это точки входа.
 
 ## Архитектура
 
