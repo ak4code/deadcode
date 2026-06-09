@@ -24,7 +24,7 @@ pub const DYNAMIC_REFERENCE_BUILTINS: &[&str] = &["getattr", "setattr", "hasattr
 /// Функции регистрации маршрутов Django.
 pub const URL_REGISTRATION_FUNCTIONS: &[&str] = &["path", "re_path", "url"];
 
-/// Имена методов, вызываемых фреймворком Django неявно.
+/// Имена методов, вызываемых фреймворками Django и DRF неявно.
 ///
 /// Такие методы переопределяют поведение базовых классов и не имеют
 /// явных вызовов в коде проекта.
@@ -36,20 +36,50 @@ const IMPLICIT_METHOD_NAMES: &[&str] = &[
     "delete",
     "clean",
     "full_clean",
-    "get_queryset",
-    "get_object",
-    "get_context_data",
-    "get_absolute_url",
-    "get_success_url",
     "form_valid",
     "form_invalid",
     "setUp",
     "tearDown",
     "setUpTestData",
-    "has_add_permission",
-    "has_change_permission",
-    "has_delete_permission",
-    "has_view_permission",
+    "validate",
+    "to_representation",
+    "to_internal_value",
+    "dispatch",
+];
+
+/// Префиксы имен методов, вызываемых фреймворками по соглашению.
+///
+/// Сюда входят валидаторы полей форм и сериализаторов (`validate_email`,
+/// `clean_username`), геттеры `SerializerMethodField` и CBV (`get_queryset`,
+/// `get_total_display`), хуки DRF (`perform_create`), проверки доступа
+/// (`has_permission`) и тесты (`test_creates_order`).
+const IMPLICIT_METHOD_PREFIXES: &[&str] =
+    &["validate_", "clean_", "get_", "perform_", "has_", "test_"];
+
+/// Маркеры базовых классов, методы которых вызывает сам фреймворк.
+///
+/// Классы Django и DRF следуют соглашению CamelCase: имя базового класса
+/// заканчивается назначением (`ModelSerializer`, `APIView`, `BasePermission`).
+/// Методы классов, унаследованных от таких баз, вызываются фреймворком
+/// по контракту и не считаются мертвым кодом.
+const FRAMEWORK_DRIVEN_BASE_MARKERS: &[&str] = &[
+    "Serializer",
+    "ViewSet",
+    "View",
+    "Permission",
+    "Form",
+    "Admin",
+    "Middleware",
+    "Authentication",
+    "Throttle",
+    "Pagination",
+    "Renderer",
+    "Parser",
+    "Filter",
+    "TestCase",
+    "Consumer",
+    "Backend",
+    "Command",
 ];
 
 /// Имена классов, обнаруживаемых Django по соглашению.
@@ -128,12 +158,36 @@ pub fn is_management_command_path(file_path: &Path) -> bool {
         .any(|window| window == ["management", "commands"])
 }
 
-/// Проверяет неявное использование метода фреймворком Django.
+/// Проверяет неявное использование метода фреймворком.
+///
+/// Совпадение определяется по точному имени либо по префиксу
+/// из соглашений Django, DRF и Pytest.
 ///
 /// :param method_name: Простое имя метода.
 /// :return: Признак неявного вызова метода.
 pub fn is_implicit_method_name(method_name: &str) -> bool {
     IMPLICIT_METHOD_NAMES.contains(&method_name)
+        || IMPLICIT_METHOD_PREFIXES
+            .iter()
+            .any(|prefix| method_name.starts_with(prefix))
+}
+
+/// Проверяет принадлежность функции к тестам по соглашению Pytest.
+///
+/// :param function_name: Простое имя функции.
+/// :return: Признак тестовой функции.
+pub fn is_test_function_name(function_name: &str) -> bool {
+    function_name.starts_with("test_")
+}
+
+/// Проверяет, управляются ли методы класса фреймворком.
+///
+/// :param superclasses_text: Текст списка базовых классов.
+/// :return: Признак класса, методы которого вызывает фреймворк.
+pub fn is_framework_driven_base(superclasses_text: &str) -> bool {
+    FRAMEWORK_DRIVEN_BASE_MARKERS
+        .iter()
+        .any(|marker| superclasses_text.contains(marker))
 }
 
 /// Проверяет обнаружение класса фреймворком Django по соглашению.
@@ -222,6 +276,30 @@ mod tests {
         ));
         assert!(matches_configured_decorator("app.periodic", &configured));
         assert!(!matches_configured_decorator("app.other", &configured));
+    }
+
+    #[test]
+    fn implicit_method_names_match_exactly_or_by_prefix() {
+        assert!(is_implicit_method_name("validate"));
+        assert!(is_implicit_method_name("validate_email"));
+        assert!(is_implicit_method_name("clean_username"));
+        assert!(is_implicit_method_name("get_total_display"));
+        assert!(is_implicit_method_name("perform_create"));
+        assert!(is_implicit_method_name("has_object_permission"));
+        assert!(!is_implicit_method_name("calculate_total"));
+        assert!(!is_implicit_method_name("unused_helper"));
+    }
+
+    #[test]
+    fn framework_driven_bases_are_recognized() {
+        assert!(is_framework_driven_base("(serializers.ModelSerializer)"));
+        assert!(is_framework_driven_base("(BasePermission)"));
+        assert!(is_framework_driven_base("(viewsets.ModelViewSet)"));
+        assert!(is_framework_driven_base("(LoginRequiredMixin, DetailView)"));
+        assert!(is_framework_driven_base("(forms.ModelForm)"));
+        assert!(!is_framework_driven_base("(models.Model)"));
+        assert!(!is_framework_driven_base("(BaseService)"));
+        assert!(!is_framework_driven_base(""));
     }
 
     #[test]
