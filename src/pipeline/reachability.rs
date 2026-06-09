@@ -6,7 +6,7 @@ use petgraph::graph::{DiGraph, NodeIndex};
 
 use crate::config::AnalyzerConfiguration;
 use crate::heuristics;
-use crate::model::{CodeEntity, FileAnalysis};
+use crate::model::{CodeEntity, EntityKind, FileAnalysis};
 
 /// Вычисляет недостижимые сущности по результатам анализа файлов.
 ///
@@ -53,12 +53,14 @@ pub fn find_unreachable_entities<'analysis>(
     add_containment_edges(&entities_by_node, &mut dependency_graph, &scope_nodes);
 
     let dynamic_reference_pool = build_dynamic_reference_pool(file_analyses, configuration);
+    let framework_driven_scopes = collect_framework_driven_scopes(file_analyses, configuration);
     let reachable_nodes = compute_reachable_nodes(
         file_analyses,
         &dependency_graph,
         &scope_nodes,
         &entities_by_node,
         &dynamic_reference_pool,
+        &framework_driven_scopes,
     );
 
     let mut unreachable_entities: Vec<&CodeEntity> = entities_by_node
@@ -154,16 +156,63 @@ fn build_dynamic_reference_pool<'analysis>(
     dynamic_reference_pool
 }
 
+/// Собирает полные имена классов, методы которых вызывает фреймворк.
+///
+/// Прямым признаком служит маркер в имени базового класса. Признак
+/// распространяется транзитивно: наследник класса под управлением
+/// фреймворка также управляется фреймворком, поэтому переопределения
+/// методов в проектных иерархиях не считаются мертвым кодом.
+///
+/// :param file_analyses: Результаты анализа файлов.
+/// :param configuration: Конфигурация анализатора.
+/// :return: Множество полных имен классов под управлением фреймворка.
+fn collect_framework_driven_scopes<'analysis>(
+    file_analyses: &'analysis [FileAnalysis],
+    configuration: &AnalyzerConfiguration,
+) -> HashSet<&'analysis str> {
+    let class_entities: Vec<&CodeEntity> = file_analyses
+        .iter()
+        .flat_map(|file_analysis| file_analysis.entities.iter())
+        .filter(|code_entity| code_entity.kind == EntityKind::Class)
+        .collect();
+
+    let mut driven_qualified_names: HashSet<&str> = HashSet::new();
+    let mut driven_simple_names: HashSet<&str> = HashSet::new();
+    let mut has_changes = true;
+    while has_changes {
+        has_changes = false;
+        for class_entity in &class_entities {
+            if driven_qualified_names.contains(class_entity.qualified_name.as_str()) {
+                continue;
+            }
+            let is_framework_driven = class_entity.superclass_names.iter().any(|base_name| {
+                heuristics::is_framework_driven_base(
+                    base_name,
+                    &configuration.extra_framework_base_markers,
+                ) || driven_simple_names.contains(base_name.as_str())
+            });
+            if is_framework_driven {
+                driven_qualified_names.insert(class_entity.qualified_name.as_str());
+                driven_simple_names.insert(class_entity.simple_name.as_str());
+                has_changes = true;
+            }
+        }
+    }
+    driven_qualified_names
+}
+
 /// Вычисляет множество достижимых узлов графа.
 ///
-/// Корнями обхода выступают модули, явные точки входа и сущности,
-/// имена которых найдены в пуле динамических ссылок.
+/// Корнями обхода выступают модули, явные точки входа, сущности
+/// из пула динамических ссылок и методы классов под управлением
+/// фреймворка.
 ///
 /// :param file_analyses: Результаты анализа файлов.
 /// :param dependency_graph: Граф зависимостей.
 /// :param scope_nodes: Отображение имен областей видимости на узлы графа.
 /// :param entities_by_node: Отображение узлов графа на сущности.
 /// :param dynamic_reference_pool: Пул динамических строковых ссылок.
+/// :param framework_driven_scopes: Полные имена классов под управлением фреймворка.
 /// :return: Множество достижимых узлов.
 fn compute_reachable_nodes(
     file_analyses: &[FileAnalysis],
@@ -171,6 +220,7 @@ fn compute_reachable_nodes(
     scope_nodes: &HashMap<&str, NodeIndex>,
     entities_by_node: &HashMap<NodeIndex, &CodeEntity>,
     dynamic_reference_pool: &HashSet<&str>,
+    framework_driven_scopes: &HashSet<&str>,
 ) -> HashSet<NodeIndex> {
     let mut pending_nodes: Vec<NodeIndex> = Vec::new();
     for file_analysis in file_analyses {
@@ -181,7 +231,9 @@ fn compute_reachable_nodes(
     for (&entity_node, code_entity) in entities_by_node {
         let is_dynamic_reference_target =
             dynamic_reference_pool.contains(code_entity.simple_name.as_str());
-        if code_entity.is_entry_point || is_dynamic_reference_target {
+        let is_framework_driven_method = code_entity.kind == EntityKind::Method
+            && framework_driven_scopes.contains(code_entity.containing_scope.as_str());
+        if code_entity.is_entry_point || is_dynamic_reference_target || is_framework_driven_method {
             pending_nodes.push(entity_node);
         }
     }

@@ -52,9 +52,17 @@ const IMPLICIT_METHOD_NAMES: &[&str] = &[
 /// Сюда входят валидаторы полей форм и сериализаторов (`validate_email`,
 /// `clean_username`), геттеры `SerializerMethodField` и CBV (`get_queryset`,
 /// `get_total_display`), хуки DRF (`perform_create`), проверки доступа
-/// (`has_permission`) и тесты (`test_creates_order`).
-const IMPLICIT_METHOD_PREFIXES: &[&str] =
-    &["validate_", "clean_", "get_", "perform_", "has_", "test_"];
+/// (`has_permission`), подготовка полей документов elasticsearch-dsl
+/// (`prepare_email`) и тесты (`test_creates_order`).
+const IMPLICIT_METHOD_PREFIXES: &[&str] = &[
+    "validate_",
+    "clean_",
+    "get_",
+    "perform_",
+    "has_",
+    "prepare_",
+    "test_",
+];
 
 /// Маркеры базовых классов, методы которых вызывает сам фреймворк.
 ///
@@ -80,6 +88,9 @@ const FRAMEWORK_DRIVEN_BASE_MARKERS: &[&str] = &[
     "Consumer",
     "Backend",
     "Command",
+    "BaseModel",
+    "Document",
+    "InnerDoc",
 ];
 
 /// Последние сегменты декораторов, превращающих метод в свойство.
@@ -90,8 +101,19 @@ const FRAMEWORK_DRIVEN_BASE_MARKERS: &[&str] = &[
 const PROPERTY_DECORATOR_SEGMENTS: &[&str] =
     &["property", "cached_property", "setter", "getter", "deleter"];
 
-/// Имена классов, обнаруживаемых Django по соглашению.
-const IMPLICIT_CLASS_NAMES: &[&str] = &["Meta", "Media", "DoesNotExist", "MultipleObjectsReturned"];
+/// Имена вложенных классов, читаемых фреймворками по соглашению.
+///
+/// `Meta` и `Media` это соглашения Django, `Config` — pydantic,
+/// `Index` и `Django` — django-elasticsearch-dsl.
+const IMPLICIT_CLASS_NAMES: &[&str] = &[
+    "Meta",
+    "Media",
+    "DoesNotExist",
+    "MultipleObjectsReturned",
+    "Config",
+    "Index",
+    "Django",
+];
 
 /// Имена переменных модулей, читаемых Django по соглашению.
 const IMPLICIT_VARIABLE_NAMES: &[&str] = &[
@@ -144,12 +166,18 @@ pub fn matches_configured_decorator(
         .any(|configured| configured == normalized_decorator || configured == last_segment)
 }
 
-/// Проверяет регистрацию класса через декоратор `admin.register`.
+/// Проверяет регистрацию класса декоратором фреймворка.
+///
+/// Учитываются `admin.register` Django и `registry.register_document`
+/// django-elasticsearch-dsl.
 ///
 /// :param normalized_decorator: Нормализованное точечное имя декоратора.
-/// :return: Признак регистрации класса в админке.
-pub fn is_admin_register_decorator(normalized_decorator: &str) -> bool {
-    last_dotted_segment(normalized_decorator) == "register"
+/// :return: Признак регистрации класса во фреймворке.
+pub fn is_class_registration_decorator(normalized_decorator: &str) -> bool {
+    matches!(
+        last_dotted_segment(normalized_decorator),
+        "register" | "register_document"
+    )
 }
 
 /// Проверяет принадлежность файла к директории management команд Django.
@@ -188,14 +216,18 @@ pub fn is_test_function_name(function_name: &str) -> bool {
     function_name.starts_with("test_")
 }
 
-/// Проверяет, управляются ли методы класса фреймворком.
+/// Проверяет, управляются ли методы наследников базового класса фреймворком.
 ///
-/// :param superclasses_text: Текст списка базовых классов.
-/// :return: Признак класса, методы которого вызывает фреймворк.
-pub fn is_framework_driven_base(superclasses_text: &str) -> bool {
+/// :param base_class_name: Имя базового класса либо текст списка баз.
+/// :param extra_markers: Дополнительные маркеры из конфигурации.
+/// :return: Признак базы, методы наследников которой вызывает фреймворк.
+pub fn is_framework_driven_base(base_class_name: &str, extra_markers: &[String]) -> bool {
     FRAMEWORK_DRIVEN_BASE_MARKERS
         .iter()
-        .any(|marker| superclasses_text.contains(marker))
+        .any(|marker| base_class_name.contains(marker))
+        || extra_markers
+            .iter()
+            .any(|marker| base_class_name.contains(marker.as_str()))
 }
 
 /// Проверяет, превращает ли декоратор метод в свойство.
@@ -322,14 +354,29 @@ mod tests {
 
     #[test]
     fn framework_driven_bases_are_recognized() {
-        assert!(is_framework_driven_base("(serializers.ModelSerializer)"));
-        assert!(is_framework_driven_base("(BasePermission)"));
-        assert!(is_framework_driven_base("(viewsets.ModelViewSet)"));
-        assert!(is_framework_driven_base("(LoginRequiredMixin, DetailView)"));
-        assert!(is_framework_driven_base("(forms.ModelForm)"));
-        assert!(!is_framework_driven_base("(models.Model)"));
-        assert!(!is_framework_driven_base("(BaseService)"));
-        assert!(!is_framework_driven_base(""));
+        assert!(is_framework_driven_base("ModelSerializer", &[]));
+        assert!(is_framework_driven_base("BasePermission", &[]));
+        assert!(is_framework_driven_base("ModelViewSet", &[]));
+        assert!(is_framework_driven_base("DetailView", &[]));
+        assert!(is_framework_driven_base("ModelForm", &[]));
+        assert!(is_framework_driven_base("BaseModel", &[]));
+        assert!(is_framework_driven_base("Document", &[]));
+        assert!(!is_framework_driven_base("Model", &[]));
+        assert!(!is_framework_driven_base("BaseService", &[]));
+        assert!(!is_framework_driven_base("", &[]));
+
+        let extra_markers = vec!["Repository".to_string()];
+        assert!(is_framework_driven_base("OrderRepository", &extra_markers));
+        assert!(!is_framework_driven_base("OrderService", &extra_markers));
+    }
+
+    #[test]
+    fn class_registration_decorators_are_recognized() {
+        assert!(is_class_registration_decorator("admin.register"));
+        assert!(is_class_registration_decorator(
+            "registry.register_document"
+        ));
+        assert!(!is_class_registration_decorator("dataclass"));
     }
 
     #[test]

@@ -117,8 +117,6 @@ struct Scope {
     name: String,
     /// Вид области видимости.
     kind: ScopeKind,
-    /// Признак класса, методы которого вызывает фреймворк.
-    is_framework_driven: bool,
 }
 
 /// Обходчик синтаксического дерева одного файла.
@@ -291,6 +289,11 @@ impl<'source> EntityExtractor<'source> {
         };
         let is_entry_point =
             self.determine_entry_point(&simple_name, entity_kind, definition_node, decorator_names);
+        let superclass_names = if is_class_definition {
+            self.extract_superclass_names(definition_node)
+        } else {
+            Vec::new()
+        };
 
         self.entities.push(CodeEntity {
             simple_name: simple_name.clone(),
@@ -300,6 +303,7 @@ impl<'source> EntityExtractor<'source> {
             file_path: self.file_path.to_path_buf(),
             line_number: name_node.start_position().row + 1,
             is_entry_point,
+            superclass_names,
         });
 
         if is_class_definition {
@@ -311,12 +315,9 @@ impl<'source> EntityExtractor<'source> {
         } else {
             ScopeKind::Function
         };
-        let is_framework_driven = is_class_definition
-            && heuristics::is_framework_driven_base(self.superclasses_text(definition_node));
         self.scope_stack.push(Scope {
             name: simple_name,
             kind: scope_kind,
-            is_framework_driven,
         });
         let mut tree_cursor = definition_node.walk();
         let child_nodes: Vec<Node> = definition_node.children(&mut tree_cursor).collect();
@@ -356,7 +357,7 @@ impl<'source> EntityExtractor<'source> {
                 }
                 if decorator_names
                     .iter()
-                    .any(|decorator| heuristics::is_admin_register_decorator(decorator))
+                    .any(|decorator| heuristics::is_class_registration_decorator(decorator))
                 {
                     return true;
                 }
@@ -383,9 +384,7 @@ impl<'source> EntityExtractor<'source> {
                     .iter()
                     .any(|decorator| heuristics::is_property_decorator(decorator));
                 entity_kind == EntityKind::Method
-                    && (is_property
-                        || heuristics::is_implicit_method_name(simple_name)
-                        || self.is_inside_framework_driven_class())
+                    && (is_property || heuristics::is_implicit_method_name(simple_name))
             }
             EntityKind::Variable => false,
         }
@@ -402,18 +401,30 @@ impl<'source> EntityExtractor<'source> {
             .unwrap_or("")
     }
 
-    /// Проверяет, объявлен ли метод внутри класса, управляемого фреймворком.
+    /// Извлекает простые имена базовых классов определения класса.
     ///
-    /// :return: Признак метода класса, унаследованного от базы фреймворка.
-    fn is_inside_framework_driven_class(&self) -> bool {
-        matches!(
-            self.scope_stack.last(),
-            Some(Scope {
-                kind: ScopeKind::Class,
-                is_framework_driven: true,
-                ..
+    /// Точечные имена разрешаются до последнего сегмента, параметры
+    /// дженериков (`Generic[T]`) и аргументы метаклассов отбрасываются.
+    ///
+    /// :param definition_node: Узел `class_definition`.
+    /// :return: Список простых имен базовых классов.
+    fn extract_superclass_names(&self, definition_node: Node) -> Vec<String> {
+        let Some(superclasses_node) = definition_node.child_by_field_name("superclasses") else {
+            return Vec::new();
+        };
+        let mut tree_cursor = superclasses_node.walk();
+        superclasses_node
+            .named_children(&mut tree_cursor)
+            .filter(|base_node| {
+                base_node.kind() != "keyword_argument" && base_node.kind() != "comment"
             })
-        )
+            .filter_map(|base_node| {
+                let base_text = self.node_text(base_node);
+                let without_generics = base_text.split('[').next().unwrap_or(base_text);
+                let simple_base = heuristics::last_dotted_segment(without_generics.trim());
+                (!simple_base.is_empty()).then(|| simple_base.to_string())
+            })
+            .collect()
     }
 
     /// Обрабатывает вызов функции и применяет эвристики динамических ссылок.
@@ -539,6 +550,7 @@ impl<'source> EntityExtractor<'source> {
             file_path: self.file_path.to_path_buf(),
             line_number: name_node.start_position().row + 1,
             is_entry_point,
+            superclass_names: Vec::new(),
         });
     }
 
