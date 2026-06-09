@@ -1,0 +1,15 @@
+[package]
+name = "dc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mimalloc = "0.1.43"
+clap = { version = "4.5.20", features = ["derive"] }
+tree-sitter = "0.24.3"
+tree-sitter-python = "0.23.2"
+petgraph = "0.6.5"
+rayon = "1.10.0"
+ignore = "0.4.23"
+serde = { version = "1.0.210", features = ["derive"] }
+toml = "0.8.19"
