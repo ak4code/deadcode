@@ -3,10 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use mimalloc::MiMalloc;
 
-use dc::{load_configuration, render_report, run_analysis, AnalysisReport, DcError, ReportFormat};
+use dc::{
+    load_configuration, render_report, run_analysis, AnalysisReport, DcError, EntityKind,
+    ReportFormat,
+};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -38,9 +41,38 @@ struct CommandLineArguments {
     #[arg(short, long, value_enum, default_value_t = ReportFormat::Text)]
     format: ReportFormat,
 
+    /// Виды сущностей в отчете. По умолчанию выводятся все виды.
+    /// Допускает повторение и перечисление через запятую.
+    #[arg(short, long = "kind", value_enum, value_delimiter = ',')]
+    kinds: Vec<FindingKindArgument>,
+
     /// Вывод дополнительной статистики анализа.
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
+}
+
+/// Вид сущности для фильтрации находок из командной строки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum FindingKindArgument {
+    /// Функции уровня модуля.
+    Function,
+    /// Классы.
+    Class,
+    /// Методы классов.
+    Method,
+    /// Переменные уровня модуля.
+    Variable,
+}
+
+impl From<FindingKindArgument> for EntityKind {
+    fn from(kind_argument: FindingKindArgument) -> Self {
+        match kind_argument {
+            FindingKindArgument::Function => EntityKind::Function,
+            FindingKindArgument::Class => EntityKind::Class,
+            FindingKindArgument::Method => EntityKind::Method,
+            FindingKindArgument::Variable => EntityKind::Variable,
+        }
+    }
 }
 
 /// Инициализирует процесс анализа и выводит результаты.
@@ -85,7 +117,32 @@ fn execute(command_line_arguments: &CommandLineArguments) -> Result<AnalysisRepo
     }
     let analyzer_configuration =
         load_configuration(command_line_arguments.config_path.as_deref(), target_path)?;
-    Ok(run_analysis(target_path, &analyzer_configuration))
+    let mut analysis_report = run_analysis(target_path, &analyzer_configuration);
+    filter_findings_by_kind(&mut analysis_report, &command_line_arguments.kinds);
+    Ok(analysis_report)
+}
+
+/// Оставляет в отчете только находки запрошенных видов.
+///
+/// Пустой список видов означает отсутствие фильтрации. Код завершения
+/// программы определяется уже отфильтрованными находками.
+///
+/// :param analysis_report: Итоговый отчет анализа.
+/// :param requested_kinds: Виды сущностей из аргументов командной строки.
+fn filter_findings_by_kind(
+    analysis_report: &mut AnalysisReport,
+    requested_kinds: &[FindingKindArgument],
+) {
+    if requested_kinds.is_empty() {
+        return;
+    }
+    let allowed_kinds: Vec<EntityKind> = requested_kinds
+        .iter()
+        .map(|kind_argument| EntityKind::from(*kind_argument))
+        .collect();
+    analysis_report
+        .findings
+        .retain(|finding| allowed_kinds.contains(&finding.entity_kind));
 }
 
 /// Выводит предупреждения о пропущенных файлах в поток ошибок.

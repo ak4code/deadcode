@@ -82,6 +82,14 @@ const FRAMEWORK_DRIVEN_BASE_MARKERS: &[&str] = &[
     "Command",
 ];
 
+/// Последние сегменты декораторов, превращающих метод в свойство.
+///
+/// Свойства читаются как атрибуты: из шаблонов Django, админки
+/// и сериализаторов. Такие обращения не видны статическому анализу,
+/// поэтому свойства не считаются мертвым кодом.
+const PROPERTY_DECORATOR_SEGMENTS: &[&str] =
+    &["property", "cached_property", "setter", "getter", "deleter"];
+
 /// Имена классов, обнаруживаемых Django по соглашению.
 const IMPLICIT_CLASS_NAMES: &[&str] = &["Meta", "Media", "DoesNotExist", "MultipleObjectsReturned"];
 
@@ -190,6 +198,17 @@ pub fn is_framework_driven_base(superclasses_text: &str) -> bool {
         .any(|marker| superclasses_text.contains(marker))
 }
 
+/// Проверяет, превращает ли декоратор метод в свойство.
+///
+/// Учитываются `property`, `functools.cached_property` и аксессоры
+/// `@имя.setter`, `@имя.getter`, `@имя.deleter`.
+///
+/// :param normalized_decorator: Нормализованное точечное имя декоратора.
+/// :return: Признак декоратора свойства.
+pub fn is_property_decorator(normalized_decorator: &str) -> bool {
+    PROPERTY_DECORATOR_SEGMENTS.contains(&last_dotted_segment(normalized_decorator))
+}
+
 /// Проверяет обнаружение класса фреймворком Django по соглашению.
 ///
 /// :param class_name: Простое имя класса.
@@ -288,6 +307,17 @@ mod tests {
         assert!(is_implicit_method_name("has_object_permission"));
         assert!(!is_implicit_method_name("calculate_total"));
         assert!(!is_implicit_method_name("unused_helper"));
+    }
+
+    #[test]
+    fn property_decorators_are_recognized() {
+        assert!(is_property_decorator("property"));
+        assert!(is_property_decorator("functools.cached_property"));
+        assert!(is_property_decorator("cached_property"));
+        assert!(is_property_decorator("price.setter"));
+        assert!(is_property_decorator("price.deleter"));
+        assert!(!is_property_decorator("staticmethod"));
+        assert!(!is_property_decorator("classmethod"));
     }
 
     #[test]
