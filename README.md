@@ -7,6 +7,18 @@
 неиспользуемого кода с минимумом ложных срабатываний: анализатор учитывает
 специфику фреймворка Django и динамическую природу Python.
 
+## Установка
+
+Install rust and cargo, then run:
+```bash
+curl https://sh.rustup.rs -sSf | sh
+```
+
+Then install deadcode via cargo:
+```bash
+cargo install --git https://github.com/ak4code/deadcode
+```
+
 ## Сборка и запуск
 
 ```bash
