@@ -9,24 +9,23 @@
 
 ## Установка
 
-Install rust and cargo, then run:
+Если rust и cargo не установлены:
 ```bash
 curl https://sh.rustup.rs -sSf | sh
 ```
 
-Then install deadcode via cargo:
+Установка самого инструмента:
 ```bash
 cargo install --git https://github.com/ak4code/deadcode
 ```
 
-## Сборка и запуск
+## Запуск
 
 ```bash
-cargo build --release
-./target/release/dc            # запуск в корне анализируемого проекта
-./target/release/dc --target-path /path/to/project --verbose
-./target/release/dc --format json > report.json
-./target/release/dc --kind function,method   # только функции и методы
+dc            # запуск в корне анализируемого проекта
+dc --target-path /path/to/project --verbose
+dc --format json > report.json
+dc --kind function,method   # только функции и методы
 ```
 
 Параметры командной строки:
